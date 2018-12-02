@@ -54,7 +54,7 @@ GAMMA = 0.9
 MEMORY_SIZE = 1e3
 INIT_MEMORY_SIZE = MEMORY_SIZE // 5
 STEPS_PER_EPOCH = 479 * MAX_STEP // UPDATE_FREQ
-EVAL_EPISODE = 500
+EVAL_EPISODE = 150
 
 ROM_FILE = None
 METHOD = None
@@ -112,13 +112,7 @@ class Model(DQNModel):
     def __init__(self):
         super(Model, self).__init__(STATE_SHAPE, METHOD, GAMMA)
 
-    def _get_DQN_prediction(self, state, history):
-        # BGR mean
-        mean = tf.constant([103.939, 123.68, 116.779], dtype=tf.float32, shape=[1, 1, 1, 3], name='img_mean')
-        image = state - mean
-        with tf.variable_scope('vgg16'):
-            features = vgg_conv(image)
-
+    def _get_DQN_prediction(self, features, history, num_actions):
         # fc
         with tf.variable_scope('fc'):
             fc1 = slim.dropout(slim.fully_connected(tf.concat([slim.flatten(features), history], axis=1), 1024),
@@ -127,18 +121,19 @@ class Model(DQNModel):
                                is_training=get_current_tower_context().is_training)
 
         if self.method != 'Dueling':
-            Q = FullyConnected('fct', fc2, self.num_actions)
+            Q = FullyConnected('fct', fc2, num_actions)
         else:
             # Dueling DQN
             V = FullyConnected('fctV', fc2, 1)
-            As = FullyConnected('fctA', fc2, self.num_actions)
+            As = FullyConnected('fctA', fc2, num_actions)
             Q = tf.add(As, V - tf.reduce_mean(As, 1, keep_dims=True))
         return tf.identity(Q, name='Qvalue')
 
 
 def get_config():
     expreplay = ExpReplay(
-        predictor_io_names=(['state', 'history'], ['Qvalue']),
+        predictor_io_names=(['state', 'history'], ['stage1/Qvalue']),
+        predictor_refine_io_names=(['state_refine', 'history_refine'], ['stage2/Qvalue']),
         env=get_player(test=False),
         state_shape=STATE_SHAPE,
         batch_size=BATCH_SIZE,
@@ -154,7 +149,8 @@ def get_config():
         data=QueueInput(expreplay),
         model=Model(),
         callbacks=[
-            Evaluator(EVAL_EPISODE, ['state', 'history'], ['Qvalue'], partial(get_player, True)),
+            Evaluator(EVAL_EPISODE, ['state', 'history'], ['stage1/Qvalue'],
+                      ['state_refine', 'history_refine'], ['stage2/Qvalue'], partial(get_player, True)),
             ModelSaver(),
             PeriodicTrigger(
                 RunOp(DQNModel.update_target_param, verbose=True),
@@ -174,11 +170,12 @@ def get_config():
     )
 
 
-# difference between the paper and ours:
+# TODO: difference between the paper and ours:
 # epoch steps slightly varies
 # double DQN
 # train VGG16 or use pre-trained network?
 # train and test # of images not the same
+# initial memory size: stage-1 1000, stage-2 5000
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', help='comma separated list of GPU(s) to use.')

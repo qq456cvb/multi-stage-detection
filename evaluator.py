@@ -18,7 +18,7 @@ import numpy as np
 import tensorflow as tf
 
 
-def play_one_episode(env, func, verbose=False):
+def play_one_episode(env, func, func_refine, verbose=False):
     env.reset()
 
     r = 0
@@ -29,8 +29,17 @@ def play_one_episode(env, func, verbose=False):
         q_values = func(state[None, ...], history.reshape(1, -1))[0][0]
         action = np.argmax(q_values)
 
-        # intention
-        reward, done = env.step(env.action_space[action])
+        if env.action_space[action] != 'trigger':
+            env.step(env.action_space[action])
+            refine_stop = False
+            while not refine_stop:
+                state_refine, history_refine = env.focus_image, env.history_refine
+                q_values = func_refine(state_refine[None, ...], history_refine.reshape(1, -1))[0][0]
+                act_refine = np.argmax(q_values)
+                reward_refine, refine_stop = env.step_refine(env.action_space_refine[act_refine])
+            reward, done = env.step_post()
+        else:
+            reward, done = env.step(env.action_space[action])
         if verbose:
             print(env.action_space[action])
             print(reward)
@@ -43,7 +52,7 @@ def play_one_episode(env, func, verbose=False):
             cv2.imshow('image', img)
             cv2.waitKey(0)
         r += reward
-    return r, float(env.crt_iou > 0.5)
+    return r, float(env.iou > 0.5)
 
 
 def eval_with_funcs(predictors, nr_eval, get_player_fn, verbose=False):
@@ -53,9 +62,10 @@ def eval_with_funcs(predictors, nr_eval, get_player_fn, verbose=False):
     """
 
     class Worker(StoppableThread, ShareSessionThread):
-        def __init__(self, func, queue):
+        def __init__(self, func, func_refine, queue):
             super(Worker, self).__init__()
             self._func = func
+            self._func_refine = func_refine
             self.q = queue
 
         def func(self, *args, **kwargs):
@@ -63,18 +73,23 @@ def eval_with_funcs(predictors, nr_eval, get_player_fn, verbose=False):
                 raise RuntimeError("stopped!")
             return self._func(*args, **kwargs)
 
+        def func_refine(self, *args, **kwargs):
+            if self.stopped():
+                raise RuntimeError("stopped!")
+            return self._func_refine(*args, **kwargs)
+
         def run(self):
             with self.default_sess():
                 player = get_player_fn()
                 while not self.stopped():
                     try:
-                        r, tp = play_one_episode(player, self.func, verbose)
+                        r, tp = play_one_episode(player, self.func, self.func_refine, verbose)
                     except RuntimeError:
                         return
                     self.queue_put_stoppable(self.q, (r, tp))
 
     q = queue.Queue()
-    threads = [Worker(f, q) for f in predictors]
+    threads = [Worker(f[0], f[1], q) for f in predictors]
 
     for k in threads:
         k.start()
@@ -103,16 +118,20 @@ def eval_with_funcs(predictors, nr_eval, get_player_fn, verbose=False):
 
 
 class Evaluator(Callback):
-    def __init__(self, nr_eval, input_names, output_names, get_player_fn):
+    def __init__(self, nr_eval, input_names, output_names,
+                 input_names_refine, output_names_refine, get_player_fn):
         self.eval_episode = nr_eval
         self.input_names = input_names
         self.output_names = output_names
+        self.input_names_refine = input_names_refine
+        self.output_names_refine = output_names_refine
         self.get_player_fn = get_player_fn
 
     def _setup_graph(self):
         nr_proc = min(multiprocessing.cpu_count() // 2, 20)
-        self.pred_funcs = [self.trainer.get_predictor(
-            self.input_names, self.output_names)] * nr_proc
+        self.pred_funcs = [(self.trainer.get_predictor(
+            self.input_names, self.output_names), self.trainer.get_predictor(
+            self.input_names_refine, self.output_names_refine))] * nr_proc
 
     def _before_train(self):
         t = time.time()

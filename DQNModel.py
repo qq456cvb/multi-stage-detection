@@ -24,7 +24,7 @@ class Model(ModelDesc):
     def __init__(self, state_shape, method, gamma):
         self.state_shape = state_shape
         self.method = method
-        self.num_actions = len(Env.action_space)
+        self.num_actions = (len(Env.action_space), len(Env.action_space_refine))
         self.gamma = gamma
 
     def inputs(self):
@@ -36,58 +36,92 @@ class Model(ModelDesc):
                 tf.placeholder(tf.int64, (None,), 'action'),
                 tf.placeholder(tf.float32, (None,), 'reward'),
                 tf.placeholder(tf.bool, (None,), 'isOver'),
-                tf.placeholder(tf.float32, (None, 2, config.HISTORY_LEN * self.num_actions), 'joint_history')]
+                tf.placeholder(tf.float32, (None, 2, config.HISTORY_LEN * self.num_actions[0]), 'joint_history'),
+                tf.placeholder(tf.float32,
+                               (None, 2, *self.state_shape),
+                               'joint_state_refine'),
+                tf.placeholder(tf.int64, (None,), 'action_refine'),
+                tf.placeholder(tf.float32, (None,), 'reward_refine'),
+                tf.placeholder(tf.bool, (None,), 'isOver_refine'),
+                tf.placeholder(tf.float32, (None, 2, config.HISTORY_LEN * self.num_actions[1]), 'joint_history_refine')
+                ]
 
     @abc.abstractmethod
-    def _get_DQN_prediction(self, state, history):
+    def _get_DQN_prediction(self, state, history, num_actions):
         pass
 
     @auto_reuse_variable_scope
-    def get_DQN_prediction(self, state, history):
-        return self._get_DQN_prediction(state, history)
+    def get_DQN_prediction(self, state, history, num_actions):
+        return self._get_DQN_prediction(state, history, num_actions)
+
+    @auto_reuse_variable_scope
+    def get_features(self, state):
+        # BGR mean
+        mean = tf.constant([103.939, 123.68, 116.779], dtype=tf.float32, shape=[1, 1, 1, 3], name='img_mean')
+        image = state - mean
+        with tf.variable_scope('vgg16'):
+            features = vgg_conv(image)
+        return features
 
     # joint state: B * 2 * 224 * 224 * 3
     # dynamic action range
-    def build_graph(self, joint_state, action, reward, isOver, joint_history):
-        state = tf.identity(joint_state[:, 0, ...], name='state')
+    def build_graph(self, joint_state, action, reward, isOver, joint_history,
+                    joint_state_refine, action_refine, reward_refine, isOver_refine, joint_history_refine):
+        # vgg are shared among stage-1 and stage-2
+        state = self.get_features(tf.identity(joint_state[:, 0, ...], name='state'))
         history = tf.identity(joint_history[:, 0, ...], name='history')
-        next_state = tf.identity(joint_state[:, 1, ...], name='next_state')
+        next_state = self.get_features(tf.identity(joint_state[:, 1, ...], name='next_state'))
         next_history = tf.identity(joint_history[:, 1, ...], name='next_history')
 
-        self.predict_value = self.get_DQN_prediction(state, history)
-        if not get_current_tower_context().is_training:
-            return
+        state_refine = self.get_features(tf.identity(joint_state_refine[:, 0, ...], name='state_refine'))
+        history_refine = tf.identity(joint_history_refine[:, 0, ...], name='history_refine')
+        next_state_refine = self.get_features(tf.identity(joint_state_refine[:, 1, ...], name='next_state_refine'))
+        next_history_refine = tf.identity(joint_history_refine[:, 1, ...], name='next_history_refine')
 
-        action_onehot = tf.one_hot(action, self.num_actions, 1.0, 0.0)
+        total_cost = []
+        for i, data in enumerate([[state, history, next_state, next_history, action, reward, isOver],
+                                  [state_refine, history_refine, next_state_refine, next_history_refine, action_refine, reward_refine, isOver_refine]]):
+            with tf.variable_scope('stage%d' % (i + 1)):
+                st, hist, next_st, next_hist, act, rw, over = data
 
-        pred_action_value = tf.reduce_sum(self.predict_value * action_onehot, 1)  # N,
-        # max_pred_reward = tf.reduce_mean(pred_action_value, name='predict_reward')
-        max_pred_reward = tf.reduce_mean(tf.reduce_max(
-           self.predict_value, 1), name='predict_reward')
-        summary.add_moving_summary(max_pred_reward)
+                predict_value = self.get_DQN_prediction(st, hist, self.num_actions[i])
+                if not get_current_tower_context().is_training:
+                    if i == 0:
+                        continue
+                    elif i == 1:
+                        return
 
-        with tf.variable_scope('target'), varreplace.freeze_variables(skip_collection=True):
-            targetQ_predict_value = self.get_DQN_prediction(next_state, next_history)    # NxA
+                action_onehot = tf.one_hot(act, self.num_actions[i], 1.0, 0.0)
 
-        if self.method != 'Double':
-            # DQN
-            best_v = tf.reduce_max(targetQ_predict_value, 1)    # N,
-        else:
-            # Double-DQN
-            next_predict_value = self.get_DQN_prediction(next_state, next_history)
-            self.greedy_choice = tf.argmax(next_predict_value, 1)   # N,
-            predict_onehot = tf.one_hot(self.greedy_choice, self.num_actions, 1.0, 0.0)
-            best_v = tf.reduce_sum(targetQ_predict_value * predict_onehot, 1)
+                pred_action_value = tf.reduce_sum(predict_value * action_onehot, 1)  # N,
+                # max_pred_reward = tf.reduce_mean(pred_action_value, name='predict_reward')
+                max_pred_reward = tf.reduce_mean(tf.reduce_max(
+                   predict_value, 1), name='predict_reward')
+                summary.add_moving_summary(max_pred_reward)
 
-        target = reward + (1.0 - tf.cast(isOver, tf.float32)) * self.gamma * tf.stop_gradient(best_v)
-        average_target = tf.reduce_mean(target, name='average_target')
-        # average_target = tf.Print(average_target, [], name='average_target')
-        cost = tf.losses.mean_squared_error(
-            target, pred_action_value, reduction=tf.losses.Reduction.MEAN)
+                with tf.variable_scope('target'), varreplace.freeze_variables(skip_collection=True):
+                    targetQ_predict_value = self.get_DQN_prediction(next_st, next_hist, self.num_actions[i])    # NxA
 
-        summary.add_moving_summary(cost)
-        summary.add_moving_summary(average_target)
-        return cost
+                if self.method != 'Double':
+                    # DQN
+                    best_v = tf.reduce_max(targetQ_predict_value, 1)    # N,
+                else:
+                    # Double-DQN
+                    next_predict_value = self.get_DQN_prediction(next_st, next_hist, self.num_actions[i])
+                    greedy_choice = tf.argmax(next_predict_value, 1)   # N,
+                    predict_onehot = tf.one_hot(greedy_choice, self.num_actions[i], 1.0, 0.0)
+                    best_v = tf.reduce_sum(targetQ_predict_value * predict_onehot, 1)
+
+                target = rw + (1.0 - tf.cast(over, tf.float32)) * self.gamma * tf.stop_gradient(best_v)
+                average_target = tf.reduce_mean(target, name='average_target')
+                # average_target = tf.Print(average_target, [], name='average_target')
+                cost = tf.losses.mean_squared_error(
+                    target, pred_action_value, reduction=tf.losses.Reduction.MEAN)
+                total_cost.append(cost)
+
+                summary.add_moving_summary(cost)
+                summary.add_moving_summary(average_target)
+        return tf.add_n(total_cost)
 
     def optimizer(self):
         lr = tf.get_variable('learning_rate', initializer=Model.learning_rate, trainable=False)

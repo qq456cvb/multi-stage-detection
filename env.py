@@ -66,6 +66,11 @@ class Env(Callback):
     def _before_train(self):
         pass
 
+    def reset_refine(self):
+        self.crt_step_refine = 0
+        self.cd = compute_cd(self.target_bbox, self.crt_bbox)
+        self.history_refine = np.zeros([config.HISTORY_LEN, len(self.action_space_refine)], np.float32)
+
     def reset(self):
         # focus in normalized coordinate format YXYX
         index = rd.randint(0, len(self.images) - 1)
@@ -80,7 +85,7 @@ class Env(Callback):
         cd = compute_cd(self.target_bbox, self.crt_bbox)
 
         self.last_score = iou + gtc + 1 - cd
-        self.crt_iou = iou
+        self.iou = iou
 
         self.history = np.zeros([config.HISTORY_LEN, len(self.action_space)], np.float32)
 
@@ -88,8 +93,31 @@ class Env(Callback):
     def get_focus(self, focus):
         focus_ymin, focus_ymax = int(focus[0] * self.image.shape[0]), int(focus[2] * self.image.shape[0])
         focus_xmin, focus_xmax = int(focus[1] * self.image.shape[1]), int(focus[3] * self.image.shape[1])
-        image = self.focus_image[focus_ymin:focus_ymax, focus_xmin:focus_xmax]
+        image = self.image[focus_ymin:focus_ymax, focus_xmin:focus_xmax]
+        if image.shape[0] == 0 or image.shape[1] == 0:
+            return np.zeros_like(self.image)
         return cv2.resize(image, (self.image.shape[1], self.image.shape[0]))
+
+    def step_refine(self, focus):
+        self.crt_step_refine += 1
+        if focus == 'noop':
+            for i in range(len(self.action_space_refine) - 1):
+                act = self.action_space_refine[i]
+                cd = compute_cd(self.target_bbox, concat_bbox(self.crt_bbox, act))
+                if cd < self.cd:
+                    return -1, True if self.crt_step_refine >= config.REFINE_STEP else False
+            # no improvements available
+            return 1, True if self.crt_step_refine >= config.REFINE_STEP else False
+
+        self.crt_bbox = concat_bbox(self.crt_bbox, focus)
+        self.focus_image = self.get_focus(self.crt_bbox)
+
+        cd = compute_cd(self.target_bbox, self.crt_bbox)
+        ind = 1 if cd < self.cd else -1
+        self.cd = cd
+        self.history_refine[:-1] = self.history_refine[1:]
+        self.history_refine[-1, self.action_space_refine.index(focus)] = 1.
+        return ind, True if self.crt_step_refine >= config.REFINE_STEP else False
 
     # focus in YXYX, normalized
     def step(self, focus):
@@ -101,22 +129,26 @@ class Env(Callback):
             else:
                 return -3, True
         else:
-            self.focus_image = self.get_focus(focus)
+            self.reset_refine()
             self.crt_bbox = concat_bbox(self.crt_bbox, focus)
-            iou = compute_iou(self.target_bbox, self.crt_bbox)
-            gtc = compute_gtc(self.target_bbox, self.crt_bbox)
-            cd = compute_cd(self.target_bbox, self.crt_bbox)
-            score = iou + gtc + 1 - cd
-            ind = 1 if score > self.last_score else -1
-            self.crt_iou = iou
-            self.last_score = score
+            self.focus_image = self.get_focus(self.crt_bbox)
             self.history[:-1] = self.history[1:]
             self.history[-1, self.action_space.index(focus)] = 1.
 
-            if self.crt_step >= config.MAX_STEP:
-                return ind, True
+    # evaluate reward after the second stage
+    def step_post(self):
+        iou = compute_iou(self.target_bbox, self.crt_bbox)
+        gtc = compute_gtc(self.target_bbox, self.crt_bbox)
+        cd = compute_cd(self.target_bbox, self.crt_bbox)
+        score = iou + gtc + 1 - cd
+        ind = 1 if score > self.last_score else -1
+        self.iou = iou
+        self.last_score = score
 
-            return ind, False
+        if self.crt_step >= config.MAX_STEP:
+            return ind, True
+
+        return ind, False
 
 
 from matplotlib import pyplot as plt

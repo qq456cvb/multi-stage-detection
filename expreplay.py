@@ -85,6 +85,12 @@ class ReplayMemory(object):
         self.history[pos] = exp.history
 
 
+class ReplayMemoryRefine(ReplayMemory):
+    def __init__(self, max_size, state_shape):
+        super().__init__(max_size, state_shape)
+        self.history = np.zeros((self.max_size, config.HISTORY_LEN * len(Env.action_space_refine)), dtype='float32')
+
+
 class ExpReplay(RNGDataFlow, Callback):
     """
     Implement experience replay in the paper
@@ -98,6 +104,7 @@ class ExpReplay(RNGDataFlow, Callback):
 
     def __init__(self,
                  predictor_io_names,
+                 predictor_refine_io_names,
                  env,
                  state_shape,
                  batch_size,
@@ -131,12 +138,14 @@ class ExpReplay(RNGDataFlow, Callback):
         self._populate_job_queue = queue.Queue(maxsize=5)
 
         self.mem = ReplayMemory(memory_size, state_shape)
+        self.mem_refine = ReplayMemoryRefine(memory_size, state_shape)
         self.env.reset()
         self._current_ob, self._current_history = self.env.focus_image, self.env.history
         # stage 1 ar actions
         self._action_space = self.env.action_space
-        self.num_actions = len(self._action_space)
-        logger.info("Number of Legal actions: {}".format(self.num_actions))
+        # stage 2 actions
+        self._action_space_refine = self.env.action_space_refine
+        logger.info("Number of Legal actions: stage-1-ar {}, stage-2 {}".format(len(self._action_space), len(self._action_space_refine)))
         self._player_scores = StatCounter()
         self._current_game_score = StatCounter()
         self.state_shape = state_shape
@@ -162,19 +171,33 @@ class ExpReplay(RNGDataFlow, Callback):
 
     def _populate_exp(self):
         """ populate a transition by epsilon-greedy"""
-        old_s = self._current_ob
-        old_history = self._current_history
+        old_s, old_history = self._current_ob, self._current_history
         # forced termination
-        if self.env.crt_iou > 0.5:
-            act = self._action_space.index('trigger')
+        if self.env.iou > 0.5:
+            act = -1
         else:
             if self.rng.rand() <= self.exploration:
-                act = self.rng.choice(range(self.num_actions))
+                act = self.rng.choice(range(len(self._action_space)))
             else:
                 q_values = self.predictor(old_s[None, ...], old_history.reshape(1, -1))[0][0]
                 act = np.argmax(q_values)
 
-        reward, isOver = self.env.step(self._action_space[act])
+        # stage 2
+        if self._action_space[act] != 'trigger':
+            self.env.step(self._action_space[act])
+            refine_stop = False
+            while not refine_stop:
+                state_refine, history_refine = self.env.focus_image, self.env.history_refine
+                if self.rng.rand() <= self.exploration:
+                    act_refine = self.rng.choice(range(len(self._action_space_refine)))
+                else:
+                    q_values = self.predictor_refine(state_refine[None, ...], history_refine.reshape(1, -1))[0][0]
+                    act_refine = np.argmax(q_values)
+                reward_refine, refine_stop = self.env.step_refine(self._action_space_refine[act_refine])
+                self.mem_refine.append(Experience(state_refine, act_refine, reward_refine, refine_stop, history_refine.reshape(-1)))
+            reward, isOver = self.env.step_post()
+        else:
+            reward, isOver = self.env.step(self._action_space[act])
         self._current_game_score.feed(reward)
 
         if isOver:
@@ -186,13 +209,6 @@ class ExpReplay(RNGDataFlow, Callback):
         self._current_ob, self._current_history = self.env.focus_image, self.env.history
         self.mem.append(Experience(old_s, act, reward, isOver, old_history.reshape(-1)))
 
-    def debug(self, cnt=100000):
-        with get_tqdm(total=cnt) as pbar:
-            for i in range(cnt):
-                self.mem.append(Experience(np.zeros([self.num_actions, self.num_actions, 256]), 0, 0, False))
-                # self._current_ob, self._action_space = self.get_state_and_action_spaces(None)
-                pbar.update()
-
     def get_data(self):
         # wait for memory to be initialized
         self._init_memory_flag.wait()
@@ -203,8 +219,9 @@ class ExpReplay(RNGDataFlow, Callback):
                 len(self.mem) - 1,
                 size=self.batch_size)
             batch_exp = [self.mem.sample(i) for i in idx]
+            batch_exp_refine = [self.mem_refine.sample(i) for i in idx]
 
-            yield self._process_batch(batch_exp)
+            yield self._process_batch(batch_exp) + self._process_batch(batch_exp_refine)
             self._populate_job_queue.put(1)
 
     def _process_batch(self, batch_exp):
@@ -217,6 +234,7 @@ class ExpReplay(RNGDataFlow, Callback):
 
     def _setup_graph(self):
         self.predictor = self.trainer.get_predictor(*self.predictor_io_names)
+        self.predictor_refine = self.trainer.get_predictor(*self.predictor_refine_io_names)
 
     def _before_train(self):
         self._init_memory()
