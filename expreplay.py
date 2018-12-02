@@ -23,7 +23,7 @@ import os
 __all__ = ['ExpReplay']
 
 Experience = namedtuple('Experience',
-                        ['joint_state', 'action', 'reward', 'isOver'])
+                        ['joint_state', 'action', 'reward', 'isOver', 'history'])
 
 
 class ReplayMemory(object):
@@ -35,6 +35,7 @@ class ReplayMemory(object):
         self.action = np.zeros((self.max_size,), dtype='int32')
         self.reward = np.zeros((self.max_size,), dtype='float32')
         self.isOver = np.zeros((self.max_size,), dtype='bool')
+        self.history = np.zeros((self.max_size, config.HISTORY_LEN * len(Env.action_space)), dtype='float32')
 
         self._curr_size = 0
         self._curr_pos = 0
@@ -61,10 +62,12 @@ class ReplayMemory(object):
         isOver = self.isOver[idx]
         if idx + 2 <= self._curr_size:
             state = self.state[idx:idx+2]
+            history = self.history[idx:idx+2]
         else:
             end = idx + 2 - self._curr_size
             state = self._slice(self.state, idx, end)
-        return state, action, reward, isOver
+            history = self._slice(self.history, idx, end)
+        return state, action, reward, isOver, history
 
     def _slice(self, arr, start, end):
         s1 = arr[start:]
@@ -79,6 +82,7 @@ class ReplayMemory(object):
         self.action[pos] = exp.action
         self.reward[pos] = exp.reward
         self.isOver[pos] = exp.isOver
+        self.history[pos] = exp.history
 
 
 class ExpReplay(RNGDataFlow, Callback):
@@ -118,7 +122,6 @@ class ExpReplay(RNGDataFlow, Callback):
                 setattr(self, k, v)
         self.exploration = init_exploration
         self.env = env
-        logger.info("Number of Legal actions: {}, {}".format(*self.num_actions))
 
         self.rng = get_rng(self)
         # print('RNG------------------------------------------', self.rng.randint(10))
@@ -129,10 +132,11 @@ class ExpReplay(RNGDataFlow, Callback):
 
         self.mem = ReplayMemory(memory_size, state_shape)
         self.env.reset()
-        self._current_ob = self.env.focus_image
+        self._current_ob, self._current_history = self.env.focus_image, self.env.history
         # stage 1 ar actions
         self._action_space = self.env.action_space
         self.num_actions = len(self._action_space)
+        logger.info("Number of Legal actions: {}".format(self.num_actions))
         self._player_scores = StatCounter()
         self._current_game_score = StatCounter()
         self.state_shape = state_shape
@@ -159,6 +163,7 @@ class ExpReplay(RNGDataFlow, Callback):
     def _populate_exp(self):
         """ populate a transition by epsilon-greedy"""
         old_s = self._current_ob
+        old_history = self._current_history
         # forced termination
         if self.env.crt_iou > 0.5:
             act = self._action_space.index('trigger')
@@ -166,10 +171,8 @@ class ExpReplay(RNGDataFlow, Callback):
             if self.rng.rand() <= self.exploration:
                 act = self.rng.choice(range(self.num_actions))
             else:
-                q_values = self.predictor(old_s[None, ...])[0][0]
+                q_values = self.predictor(old_s[None, ...], old_history.reshape(1, -1))[0][0]
                 act = np.argmax(q_values)
-                # clamp action to valid range
-                act = min(act, self.num_actions - 1)
 
         reward, isOver = self.env.step(self._action_space[act])
         self._current_game_score.feed(reward)
@@ -180,13 +183,13 @@ class ExpReplay(RNGDataFlow, Callback):
             self._player_scores.feed(self._current_game_score.sum)
             self.env.reset()
             self._current_game_score.reset()
-        self._current_ob = self.env.focus_image
-        self.mem.append(Experience(old_s, act, reward, isOver))
+        self._current_ob, self._current_history = self.env.focus_image, self.env.history
+        self.mem.append(Experience(old_s, act, reward, isOver, old_history.reshape(-1)))
 
     def debug(self, cnt=100000):
         with get_tqdm(total=cnt) as pbar:
             for i in range(cnt):
-                self.mem.append(Experience(np.zeros([self.num_actions, self.num_actions, 256]), 0, 0, False, True if i % 2 == 0 else False))
+                self.mem.append(Experience(np.zeros([self.num_actions, self.num_actions, 256]), 0, 0, False))
                 # self._current_ob, self._action_space = self.get_state_and_action_spaces(None)
                 pbar.update()
 
@@ -206,14 +209,11 @@ class ExpReplay(RNGDataFlow, Callback):
 
     def _process_batch(self, batch_exp):
         state = np.asarray([e[0] for e in batch_exp], dtype='float32')
-        # print('state',np.array(state).shape)
         action = np.asarray([e[1] for e in batch_exp], dtype='int32')
-        # print('action',action)
         reward = np.asarray([e[2] for e in batch_exp], dtype='float32')
-        # print('reward',reward)
         isOver = np.asarray([e[3] for e in batch_exp], dtype='bool')
-        # print('isOver',isOver)
-        return [state, action, reward, isOver]
+        history = np.asarray([e[4] for e in batch_exp], dtype='float32')
+        return [state, action, reward, isOver, history]
 
     def _setup_graph(self):
         self.predictor = self.trainer.get_predictor(*self.predictor_io_names)

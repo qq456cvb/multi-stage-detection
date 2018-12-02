@@ -12,11 +12,10 @@ from tensorpack.utils import logger
 from tensorpack.tfutils import (
     varreplace, summary, get_current_tower_context, optimizer, gradproc)
 from tensorpack.tfutils.scope_utils import auto_reuse_variable_scope
-assert tensorpack.tfutils.common.get_tf_version_number() >= 1.2
 from vgg16 import *
 from tensorflow.contrib.slim.nets import resnet_utils
 from env import Env
-
+import config
 
 
 class Model(ModelDesc):
@@ -37,7 +36,7 @@ class Model(ModelDesc):
                 tf.placeholder(tf.int64, (None,), 'action'),
                 tf.placeholder(tf.float32, (None,), 'reward'),
                 tf.placeholder(tf.bool, (None,), 'isOver'),
-                tf.placeholder(tf.float32, (None, 2, 4 * self.num_actions), 'history')]
+                tf.placeholder(tf.float32, (None, 2, config.HISTORY_LEN * self.num_actions), 'joint_history')]
 
     @abc.abstractmethod
     def _get_DQN_prediction(self, state, history):
@@ -47,18 +46,18 @@ class Model(ModelDesc):
     def get_DQN_prediction(self, state, history):
         return self._get_DQN_prediction(state, history)
 
-
     # joint state: B * 2 * 224 * 224 * 3
     # dynamic action range
-    def build_graph(self, joint_state, action, reward, isOver, history):
-        state = tf.identity(joint_state[:, 0, :, :, :], name='state')
-        next_state = tf.identity(joint_state[:, 1, :, :, :], name='next_state')
+    def build_graph(self, joint_state, action, reward, isOver, joint_history):
+        state = tf.identity(joint_state[:, 0, ...], name='state')
+        history = tf.identity(joint_history[:, 0, ...], name='history')
+        next_state = tf.identity(joint_state[:, 1, ...], name='next_state')
+        next_history = tf.identity(joint_history[:, 1, ...], name='next_history')
 
-        self.predict_value = self.get_DQN_prediction(state, history[:, 0, ...])
+        self.predict_value = self.get_DQN_prediction(state, history)
         if not get_current_tower_context().is_training:
             return
 
-        next_state = tf.identity(next_state)
         action_onehot = tf.one_hot(action, self.num_actions, 1.0, 0.0)
 
         pred_action_value = tf.reduce_sum(self.predict_value * action_onehot, 1)  # N,
@@ -68,15 +67,14 @@ class Model(ModelDesc):
         summary.add_moving_summary(max_pred_reward)
 
         with tf.variable_scope('target'), varreplace.freeze_variables(skip_collection=True):
-            # we are alternating between comb and fine states
-            targetQ_predict_value = self.get_DQN_prediction(next_state, history[:, 1, ...])    # NxA
+            targetQ_predict_value = self.get_DQN_prediction(next_state, next_history)    # NxA
 
         if self.method != 'Double':
             # DQN
             best_v = tf.reduce_max(targetQ_predict_value, 1)    # N,
         else:
             # Double-DQN
-            next_predict_value = self.get_DQN_prediction(next_state, history[:, 1, ...])
+            next_predict_value = self.get_DQN_prediction(next_state, next_history)
             self.greedy_choice = tf.argmax(next_predict_value, 1)   # N,
             predict_onehot = tf.one_hot(self.greedy_choice, self.num_actions, 1.0, 0.0)
             best_v = tf.reduce_sum(targetQ_predict_value * predict_onehot, 1)
@@ -84,7 +82,7 @@ class Model(ModelDesc):
         target = reward + (1.0 - tf.cast(isOver, tf.float32)) * self.gamma * tf.stop_gradient(best_v)
         average_target = tf.reduce_mean(target, name='average_target')
         # average_target = tf.Print(average_target, [], name='average_target')
-        cost = tf.losses.huber_loss(
+        cost = tf.losses.mean_squared_error(
             target, pred_action_value, reduction=tf.losses.Reduction.MEAN)
 
         summary.add_moving_summary(cost)

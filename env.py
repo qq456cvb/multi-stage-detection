@@ -34,7 +34,7 @@ def concat_bbox(bbox, focus):
     # print(w, h)
     res = [bbox[0] + focus[0] * h, bbox[1] + focus[1] * w,
             bbox[0] + focus[2] * h, bbox[1] + focus[3] * w]
-    # print(res)
+    res = np.clip(res, 0, 1)
     return res
 
 
@@ -48,6 +48,12 @@ class Env(Callback):
                     [0.21875, 0, 0.78125, 1],
                     [0, 0.21875, 1, 0.78125],
                     'trigger']
+
+    action_space_refine = [[-0.1, 0, 0.9, 1],
+                           [0.1, 0, 1.1, 1],
+                           [0, -0.1, 1, 0.9],
+                           [0, 0.1, 1, 1.1],
+                           'noop']
 
     def __init__(self, images, bboxes):
         self.images = images
@@ -63,13 +69,20 @@ class Env(Callback):
     def reset(self):
         # focus in normalized coordinate format YXYX
         index = rd.randint(0, len(self.images) - 1)
-        self.image = self.images[index]
+        self.image = cv2.resize(self.images[index], (224, 224))
         self.target_bbox = self.target_bboxes[index]
-        self.focus_image = self.focus_image.copy()
+        self.focus_image = self.image.copy()
         self.crt_bbox = [0, 0, 1., 1.]
         self.crt_step = 0
-        self.last_score = 0
-        self.crt_iou = 0
+
+        iou = compute_iou(self.target_bbox, self.crt_bbox)
+        gtc = compute_gtc(self.target_bbox, self.crt_bbox)
+        cd = compute_cd(self.target_bbox, self.crt_bbox)
+
+        self.last_score = iou + gtc + 1 - cd
+        self.crt_iou = iou
+
+        self.history = np.zeros([config.HISTORY_LEN, len(self.action_space)], np.float32)
 
     # focus in YXYX, normalized
     def get_focus(self, focus):
@@ -97,6 +110,8 @@ class Env(Callback):
             ind = 1 if score > self.last_score else -1
             self.crt_iou = iou
             self.last_score = score
+            self.history[:-1] = self.history[1:]
+            self.history[-1, self.action_space.index(focus)] = 1.
 
             if self.crt_step >= config.MAX_STEP:
                 return ind, True

@@ -16,22 +16,22 @@ from imagenet_classes import class_names
 
 def vgg_conv(image):
     # conv1_1
-    with tf.name_scope('conv1_1') as scope:
+    with tf.variable_scope('conv1_1') as scope:
         kernel = tf.get_variable(name='weights', shape=[3, 3, 3, 64], dtype=tf.float32,
                                  initializer=tf.truncated_normal_initializer(stddev=1e-1))
         conv = tf.nn.conv2d(image, kernel, [1, 1, 1, 1], padding='SAME')
         biases = tf.get_variable(name='biases', shape=[64], dtype=tf.float32, initializer=tf.zeros_initializer())
         out = tf.nn.bias_add(conv, biases)
-        conv1_1 = tf.nn.relu(out, name=scope)
+        conv1_1 = tf.nn.relu(out)
 
     # conv1_2
-    with tf.name_scope('conv1_2') as scope:
+    with tf.variable_scope('conv1_2') as scope:
         kernel = tf.get_variable(name='weights', shape=[3, 3, 64, 64], dtype=tf.float32,
                                  initializer=tf.truncated_normal_initializer(stddev=1e-1))
         conv = tf.nn.conv2d(conv1_1, kernel, [1, 1, 1, 1], padding='SAME')
         biases = tf.get_variable(name='biases', shape=[64], dtype=tf.float32, initializer=tf.zeros_initializer())
         out = tf.nn.bias_add(conv, biases)
-        conv1_2 = tf.nn.relu(out, name=scope)
+        conv1_2 = tf.nn.relu(out)
 
     # pool1
     pool1 = tf.nn.max_pool(conv1_2,
@@ -41,22 +41,22 @@ def vgg_conv(image):
                            name='pool1')
 
     # conv2_1
-    with tf.name_scope('conv2_1') as scope:
+    with tf.variable_scope('conv2_1') as scope:
         kernel = tf.get_variable(name='weights', shape=[3, 3, 64, 128], dtype=tf.float32,
                                  initializer=tf.truncated_normal_initializer(stddev=1e-1))
         conv = tf.nn.conv2d(pool1, kernel, [1, 1, 1, 1], padding='SAME')
         biases = tf.get_variable(name='biases', shape=[128], dtype=tf.float32, initializer=tf.zeros_initializer())
         out = tf.nn.bias_add(conv, biases)
-        conv2_1 = tf.nn.relu(out, name=scope)
+        conv2_1 = tf.nn.relu(out)
 
     # conv2_2
-    with tf.name_scope('conv2_2') as scope:
+    with tf.variable_scope('conv2_2') as scope:
         kernel = tf.get_variable(name='weights', shape=[3, 3, 128, 128], dtype=tf.float32,
                                  initializer=tf.truncated_normal_initializer(stddev=1e-1))
         conv = tf.nn.conv2d(conv2_1, kernel, [1, 1, 1, 1], padding='SAME')
         biases = tf.get_variable(name='biases', shape=[128], dtype=tf.float32, initializer=tf.zeros_initializer())
         out = tf.nn.bias_add(conv, biases)
-        conv2_2 = tf.nn.relu(out, name=scope)
+        conv2_2 = tf.nn.relu(out)
 
     # pool2
     pool2 = tf.nn.max_pool(conv2_2,
@@ -66,31 +66,31 @@ def vgg_conv(image):
                            name='pool2')
 
     # conv3_1
-    with tf.name_scope('conv3_1') as scope:
+    with tf.variable_scope('conv3_1') as scope:
         kernel = tf.get_variable(name='weights', shape=[3, 3, 128, 256], dtype=tf.float32,
                                  initializer=tf.truncated_normal_initializer(stddev=1e-1))
         conv = tf.nn.conv2d(pool2, kernel, [1, 1, 1, 1], padding='SAME')
         biases = tf.get_variable(name='biases', shape=[256], dtype=tf.float32, initializer=tf.zeros_initializer())
         out = tf.nn.bias_add(conv, biases)
-        conv3_1 = tf.nn.relu(out, name=scope)
+        conv3_1 = tf.nn.relu(out)
 
     # conv3_2
-    with tf.name_scope('conv3_2') as scope:
+    with tf.variable_scope('conv3_2') as scope:
         kernel = tf.get_variable(name='weights', shape=[3, 3, 256, 256], dtype=tf.float32,
                                  initializer=tf.truncated_normal_initializer(stddev=1e-1))
         conv = tf.nn.conv2d(conv3_1, kernel, [1, 1, 1, 1], padding='SAME')
         biases = tf.get_variable(name='biases', shape=[256], dtype=tf.float32, initializer=tf.zeros_initializer())
         out = tf.nn.bias_add(conv, biases)
-        conv3_2 = tf.nn.relu(out, name=scope)
+        conv3_2 = tf.nn.relu(out)
 
     # conv3_3
-    with tf.name_scope('conv3_3') as scope:
+    with tf.variable_scope('conv3_3') as scope:
         kernel = tf.get_variable(name='weights', shape=[3, 3, 256, 256], dtype=tf.float32,
                                  initializer=tf.truncated_normal_initializer(stddev=1e-1))
         conv = tf.nn.conv2d(conv3_2, kernel, [1, 1, 1, 1], padding='SAME')
         biases = tf.get_variable(name='biases', shape=[256], dtype=tf.float32, initializer=tf.zeros_initializer())
         out = tf.nn.bias_add(conv, biases)
-        conv3_3 = tf.nn.relu(out, name=scope)
+        conv3_3 = tf.nn.relu(out)
 
     # pool3
     pool3 = tf.nn.max_pool(conv3_3,
@@ -100,31 +100,31 @@ def vgg_conv(image):
                            name='pool3')
 
     # conv4_1
-    with tf.name_scope('conv4_1') as scope:
+    with tf.variable_scope('conv4_1') as scope:
         kernel = tf.get_variable(name='weights', shape=[3, 3, 256, 512], dtype=tf.float32,
                                  initializer=tf.truncated_normal_initializer(stddev=1e-1))
         conv = tf.nn.conv2d(pool3, kernel, [1, 1, 1, 1], padding='SAME')
         biases = tf.get_variable(name='biases', shape=[512], dtype=tf.float32, initializer=tf.zeros_initializer())
         out = tf.nn.bias_add(conv, biases)
-        conv4_1 = tf.nn.relu(out, name=scope)
+        conv4_1 = tf.nn.relu(out)
 
     # conv4_2
-    with tf.name_scope('conv4_2') as scope:
+    with tf.variable_scope('conv4_2') as scope:
         kernel = tf.get_variable(name='weights', shape=[3, 3, 512, 512], dtype=tf.float32,
                                  initializer=tf.truncated_normal_initializer(stddev=1e-1))
         conv = tf.nn.conv2d(conv4_1, kernel, [1, 1, 1, 1], padding='SAME')
         biases = tf.get_variable(name='biases', shape=[512], dtype=tf.float32, initializer=tf.zeros_initializer())
         out = tf.nn.bias_add(conv, biases)
-        conv4_2 = tf.nn.relu(out, name=scope)
+        conv4_2 = tf.nn.relu(out)
 
     # conv4_3
-    with tf.name_scope('conv4_3') as scope:
+    with tf.variable_scope('conv4_3') as scope:
         kernel = tf.get_variable(name='weights', shape=[3, 3, 512, 512], dtype=tf.float32,
                                  initializer=tf.truncated_normal_initializer(stddev=1e-1))
         conv = tf.nn.conv2d(conv4_2, kernel, [1, 1, 1, 1], padding='SAME')
         biases = tf.get_variable(name='biases', shape=[512], dtype=tf.float32, initializer=tf.zeros_initializer())
         out = tf.nn.bias_add(conv, biases)
-        conv4_3 = tf.nn.relu(out, name=scope)
+        conv4_3 = tf.nn.relu(out)
 
     # pool4
     pool4 = tf.nn.max_pool(conv4_3,
@@ -134,31 +134,31 @@ def vgg_conv(image):
                            name='pool4')
 
     # conv5_1
-    with tf.name_scope('conv5_1') as scope:
+    with tf.variable_scope('conv5_1') as scope:
         kernel = tf.get_variable(name='weights', shape=[3, 3, 512, 512], dtype=tf.float32,
                                  initializer=tf.truncated_normal_initializer(stddev=1e-1))
         conv = tf.nn.conv2d(pool4, kernel, [1, 1, 1, 1], padding='SAME')
         biases = tf.get_variable(name='biases', shape=[512], dtype=tf.float32, initializer=tf.zeros_initializer())
         out = tf.nn.bias_add(conv, biases)
-        conv5_1 = tf.nn.relu(out, name=scope)
+        conv5_1 = tf.nn.relu(out)
 
     # conv5_2
-    with tf.name_scope('conv5_2') as scope:
+    with tf.variable_scope('conv5_2') as scope:
         kernel = tf.get_variable(name='weights', shape=[3, 3, 512, 512], dtype=tf.float32,
                                  initializer=tf.truncated_normal_initializer(stddev=1e-1))
         conv = tf.nn.conv2d(conv5_1, kernel, [1, 1, 1, 1], padding='SAME')
         biases = tf.get_variable(name='biases', shape=[512], dtype=tf.float32, initializer=tf.zeros_initializer())
         out = tf.nn.bias_add(conv, biases)
-        conv5_2 = tf.nn.relu(out, name=scope)
+        conv5_2 = tf.nn.relu(out)
 
     # conv5_3
-    with tf.name_scope('conv5_3') as scope:
+    with tf.variable_scope('conv5_3') as scope:
         kernel = tf.get_variable(name='weights', shape=[3, 3, 512, 512], dtype=tf.float32,
                                  initializer=tf.truncated_normal_initializer(stddev=1e-1))
         conv = tf.nn.conv2d(conv5_2, kernel, [1, 1, 1, 1], padding='SAME')
         biases = tf.get_variable(name='biases', shape=[512], dtype=tf.float32, initializer=tf.zeros_initializer())
         out = tf.nn.bias_add(conv, biases)
-        conv5_3 = tf.nn.relu(out, name=scope)
+        conv5_3 = tf.nn.relu(out)
 
     # pool5
     pool5 = tf.nn.max_pool(conv5_3,

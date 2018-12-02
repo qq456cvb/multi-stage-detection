@@ -13,10 +13,11 @@ import random as rd
 from tensorflow.contrib import slim
 from config import *
 from evaluator import Evaluator, play_one_episode
-from functools import lru_cache
+from functools import lru_cache, partial
 
 from tensorpack import *
 import sys
+import datetime
 import os
 
 if os.name == 'nt':
@@ -44,9 +45,8 @@ def res_fc_block(inputs, units, stack=3):
     return tf.contrib.layers.layer_norm(residual + x, scale=False)
 
 
-BATCH_SIZE = 100
+BATCH_SIZE = 16
 STATE_SHAPE = (224, 224, 3)
-ACTION_REPEAT = 4  # aka FRAME_SKIP
 UPDATE_FREQ = 1
 
 GAMMA = 0.9
@@ -54,7 +54,7 @@ GAMMA = 0.9
 MEMORY_SIZE = 1e3
 INIT_MEMORY_SIZE = MEMORY_SIZE // 5
 STEPS_PER_EPOCH = 479 * MAX_STEP // UPDATE_FREQ
-EVAL_EPISODE = 479
+EVAL_EPISODE = 500
 
 ROM_FILE = None
 METHOD = None
@@ -71,17 +71,41 @@ def get_trainset():
         if train_db._load_pascal_annotation(idx)['boxes'].shape[0] == 1:
             single_cnt += 1
             # BGR
-            img = cv2.imread(train_db.image_path_at(idx))
+            img = cv2.imread(train_db.image_path_from_index(idx))
             train_imgs.append(img)
             width, height = img.shape[1], img.shape[0]
             bbox = train_db._load_pascal_annotation(idx)['boxes'][0]
             # YXYX normalized
             train_bboxes.append([bbox[1] / height, bbox[0] / width, bbox[3] / height, bbox[2] / width])
+    # print(single_cnt)
     return train_imgs, train_bboxes
 
 
+@lru_cache(maxsize=32)
+def get_testset():
+    test_db = get_imdb('voc_2007_test')
+    test_db._image_index = test_db._load_image_set_index('aeroplane')
+    test_bboxes = []
+    test_imgs = []
+    single_cnt = 0
+    for idx in test_db.image_index:
+        if test_db._load_pascal_annotation(idx)['boxes'].shape[0] == 1:
+            single_cnt += 1
+            # BGR
+            img = cv2.imread(test_db.image_path_from_index(idx))
+            test_imgs.append(img)
+            width, height = img.shape[1], img.shape[0]
+            bbox = test_db._load_pascal_annotation(idx)['boxes'][0]
+            # YXYX normalized
+            test_bboxes.append([bbox[1] / height, bbox[0] / width, bbox[3] / height, bbox[2] / width])
+    return test_imgs, test_bboxes
+
+
 def get_player(test=False):
-    return Env(*get_trainset())
+    if test:
+        return Env(*get_testset())
+    else:
+        return Env(*get_trainset())
 
 
 class Model(DQNModel):
@@ -114,7 +138,7 @@ class Model(DQNModel):
 
 def get_config():
     expreplay = ExpReplay(
-        predictor_io_names=(['state', 'comb_mask'], ['Qvalue']),
+        predictor_io_names=(['state', 'history'], ['Qvalue']),
         env=get_player(test=False),
         state_shape=STATE_SHAPE,
         batch_size=BATCH_SIZE,
@@ -130,7 +154,7 @@ def get_config():
         data=QueueInput(expreplay),
         model=Model(),
         callbacks=[
-            Evaluator(EVAL_EPISODE, ['state', 'comb_mask'], ['Qvalue'], get_player),
+            Evaluator(EVAL_EPISODE, ['state', 'history'], ['Qvalue'], partial(get_player, True)),
             ModelSaver(),
             PeriodicTrigger(
                 RunOp(DQNModel.update_target_param, verbose=True),
@@ -143,8 +167,6 @@ def get_config():
                 [(0, 1.), (9, 0.1)],  # 1->0.1 in the first million steps
                 interp='linear'),
             HumanHyperParamSetter('learning_rate'),
-            # Evaluator(
-            #     EVAL_EPISODE, ['state', 'comb_mask'], ['Qvalue'], [MAX_NUM_COMBS, MAX_NUM_GROUPS], get_player),
         ],
         # session_init=SaverRestore("/home/neil/PycharmProjects/RPN-RL-master/save/resnet_v2_50.ckpt"),
         steps_per_epoch=STEPS_PER_EPOCH,
@@ -155,6 +177,7 @@ def get_config():
 # difference between the paper and ours:
 # epoch steps slightly varies
 # double DQN
+# train VGG16 or use pre-trained network?
 # train and test # of images not the same
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -177,13 +200,13 @@ if __name__ == '__main__':
         pred = OfflinePredictor(PredictConfig(
             model=Model(),
             session_init=get_model_loader(args.load),
-            input_names=['state', 'comb_mask'],
+            input_names=['state', 'history'],
             output_names=['Qvalue']))
         for i in range(1000):
-            play_one_episode(get_player(test=False), pred, True)
+            play_one_episode(get_player(test=True), pred, True)
     else:
         logger.set_logger_dir(
-            os.path.join('train_log', 'DQN-GC'))
+            os.path.join('train_log', 'RPN-RL'))
         cf = get_config()
         if args.load:
             cf.session_init = get_model_loader(args.load)
